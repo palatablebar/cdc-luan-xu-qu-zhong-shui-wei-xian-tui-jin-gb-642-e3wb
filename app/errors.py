@@ -37,6 +37,11 @@ class StaleBatch(Conflict):
     code = "C_STALE_BATCH"
 
 
+class StreamRewrite(Conflict):
+    """已采信前缀被改写 / 文件缺失：继续会丢记录或重复，拒绝。"""
+    code = "C_STREAM_REWRITTEN"
+
+
 def install_handlers(app) -> None:
     from fastapi import Request
     from fastapi.responses import JSONResponse

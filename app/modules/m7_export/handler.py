@@ -38,6 +38,11 @@ def export_snapshot(ctx: Ctx = Depends(get_ctx)) -> Response:
     return _csv(ctx.store, service._batch(ctx.store, None)["batch_id"], "snapshot")
 
 
+@router.get("/api/export/cutoffs.csv")
+def export_cutoffs(ctx: Ctx = Depends(get_ctx)) -> Response:
+    return _csv(ctx.store, service._batch(ctx.store, None)["batch_id"], "cutoffs")
+
+
 @router.get("/api/export/manifest.json")
 def export_manifest(ctx: Ctx = Depends(get_ctx)) -> Response:
     batch = service._batch(ctx.store, None)

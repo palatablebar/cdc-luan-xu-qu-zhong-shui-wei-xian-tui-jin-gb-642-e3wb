@@ -72,7 +72,7 @@
 
 | 计数 | 含义 |
 |---|---|
-| `raw_lines` | 数据行（不含注释行、空行、重复表头） |
+| `raw_lines` | 数据行（不含注释行、空行、重复表头、待续尾行） |
 | `applied` | 通过契约与去重冲突、进入折叠的事件 |
 | `duplicates` | 同签名重复到达（保留首条） |
 | `conflicts` | 版本冲突 + 墓碑复活 |
@@ -82,12 +82,36 @@
 | `active_keys` / `tombstone_keys` | 快照内活跃 / 墓碑 |
 | `pending_only_keys` | 只有 `as_of` 之后事件的键 |
 | `amount_snapshot` / `amount_pending` / `amount_drift` / `amount_applied` | 四个金额位，见 DEPTH.md 的金额账 |
+| `run_seq` | 该批次第几次运行：首次 1，每续跑一次 +1 |
+| `prev_applied` / `prev_raw_lines` | 上一次运行的已应用 / 原始行（首次为 0） |
+| `pending_tail_bytes` / `pending_tail_files` | 待续尾行字节数 / 有待续尾行的文件数 |
+| `cutoff_ok` | 字节账是否逐文件成立（文件字节 = 截止位移 + 待续尾行字节） |
 
-## 9 运行清单字段
+## 9 截止位置与待续尾行（续写文件）
 
-`run_id`（`CDC-时间戳-随机`）、`batch_id`（`B-批次键`）、`batch_key`（输入摘要 + 规则版本 +
+- **完整行**：以换行符 `\n` 结尾的行。CSV 里引号字段内的换行不是行边界。
+- **待续尾行**：文件末尾最后一个完整行之后的字节（未换行，可能还在写）。**不解析、
+  不隔离、不计入数据行**，记 `S_PENDING_TAIL`，等续写完成后由下一次运行采信；
+  换行结尾但内容残缺的末行仍是导出错误，按 `E_TAIL_TRUNCATED` 隔离，两者不混。
+- **截止位置**：本次运行消费到的位置，逐文件记 `cutoff_line`（物理行号）与
+  `cutoff_offset`（字节位移）；`inputs` 表、`/batches`、`/events`、`cutoffs.csv` 与
+  `manifest.json` 的 `cutoff` 节同时给出上次（`prev_*`）与本次两值。
+- **批次键** = 来源 + 规则版本 + 参数 的 sha256 前 10 位（流身份，**不含输入摘要**）。
+  同一来源重跑：输入摘要没变 → 幂等重放，复用结果不新增行；有追加 → 同一批次续跑，
+  结果按完整前缀累计替换，`run_seq` 递增。
+- **只追加校验**：续跑时上次采信过的每个文件必须还在、没缩短，且上次截止位置之前的
+  字节 sha256 一致；改写 / 截短 / 消失一律 409 `C_STREAM_REWRITTEN`，已落库结果不动。
+- **恰好一次**：结果按完整前缀单事务重建，完整记录只进一次；失败整体回滚，重试不重复；
+  到达序号 `seq` 在追加后保持稳定，事件流按 `seq` 做 keyset 翻页，页与页不重不漏。
+
+## 10 运行清单字段
+
+`run_id`（`CDC-时间戳-随机`）、`batch_id`（`B-批次键`）、`batch_key`（来源 + 规则版本 +
 参数 的 sha256 前 10 位）、`input_digest`（每个文件 `name:sha256` 的摘要）、`inputs[]`
-（`name/bytes/sha256/lines/encoding/kind/declared_rows/status/code`）、`params`、
-`watermark_utc`、`max_event_time_utc`、`stages[]`、`counters`、`reconcile`。
+（`name/bytes/sha256/lines/encoding/kind/declared_rows/status/code` 与
+`cutoff_line/cutoff_offset/prev_cutoff_line/prev_cutoff_offset/pending_tail_bytes/
+pending_tail/prefix_sha256`）、`params`、`watermark_utc`、`max_event_time_utc`、`stages[]`、
+`counters`、`reconcile`、`cutoff`（`run_seq`、水位 / 已应用 / 原始行的前后值、逐文件
+截止位置与字节账 `byte_ok`）。
 
-同一 `input_digest` 重跑命中同一 `batch_key`，返回原批次、不新增行。
+同一来源与参数重跑命中同一 `batch_key`：输入未变复用结果，有追加则续跑累计。

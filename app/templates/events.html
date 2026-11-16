@@ -3,7 +3,11 @@
 <section class="panel">
   <div class="panel-head">
     <h1>事件流</h1>
-    <p class="panel-sub">{{ events | length }} / {{ total_events | num }} 行</p>
+    <p class="panel-sub">
+      {% if page_info.first_seq is not none %}
+      第 {{ page_info.first_seq | num }}–{{ page_info.last_seq | num }} 行 / 共 {{ total_events | num }} 行
+      {% else %}0 / {{ total_events | num }} 行{% endif %}
+    </p>
   </div>
   <div class="panel-body">
     <div class="chips">
@@ -14,6 +18,19 @@
       {% for name in table_list %}
       <a href="/events?table={{ name }}" {% if table == name %}aria-current="true"{% endif %}>{{ name }}</a>
       {% endfor %}
+    </div>
+    {% set q = ((('row_class=' ~ row_class) if row_class else '') ~ (('&table=' ~ table) if table else '')) %}
+    <div class="actions" style="margin-top:8px">
+      {% if page_info.has_prev %}
+      <a class="btn" href="/events?before={{ page_info.prev_before }}{{ '&' ~ q if q }}">上一页</a>
+      {% endif %}
+      {% if page_info.has_more %}
+      <a class="btn" href="/events?after={{ page_info.next_after }}{{ '&' ~ q if q }}">下一页</a>
+      {% endif %}
+      {% if page_info.has_prev or page_info.has_more %}
+      <a class="btn" href="/events{{ '?' ~ q if q }}">回首页</a>
+      {% endif %}
+      <span class="hint">页边界按到达序号，翻页不重不漏</span>
     </div>
   </div>
   <div class="panel-body tight">
@@ -55,13 +72,13 @@
 <section class="panel">
   <div class="panel-head">
     <h2>输入文件</h2>
-    <p class="panel-sub">{{ inputs | length }} 个</p>
+    <p class="panel-sub">{{ inputs | length }} 个 · 截止位置本次采用</p>
   </div>
   <div class="panel-body tight">
     <div class="table-wrap">
       <table class="grid">
         <thead>
-          <tr><th>文件</th><th>格式</th><th>编码</th><th>声明编码</th><th class="num">字节</th><th class="num">行</th><th class="num">声明行数</th><th>状态</th><th>原因码</th><th>摘要</th></tr>
+          <tr><th>文件</th><th>格式</th><th>编码</th><th>声明编码</th><th class="num">字节</th><th class="num">行</th><th class="num">声明行数</th><th class="num">截止行</th><th class="num">待续尾行</th><th>状态</th><th>原因码</th><th>摘要</th></tr>
         </thead>
         <tbody>
           {% for f in inputs %}
@@ -73,6 +90,8 @@
             <td class="num">{{ f.bytes | num }}</td>
             <td class="num">{{ f.lines | num }}</td>
             <td class="num">{{ f.declared_rows if f.declared_rows is not none else '—' }}</td>
+            <td class="num nowrap" title="上次 {{ f.prev_cutoff_line if f.prev_cutoff_line is not none else '—' }} → 本次 {{ f.cutoff_line }} 行 / {{ f.cutoff_offset | num }} 字节">{{ f.prev_cutoff_line if f.prev_cutoff_line is not none else '—' }} → {{ f.cutoff_line | num }}</td>
+            <td class="num" {% if f.pending_tail %}title="{{ f.pending_tail }}"{% endif %}>{{ f.pending_tail_bytes | num }}</td>
             <td>{{ f.status }}</td>
             <td class="nowrap">{% if f.code %}<code class="code is-{{ f.code | level }}">{{ f.code }}</code>{% else %}—{% endif %}</td>
             <td class="mono ellipsis" title="{{ f.sha256 }}">{{ f.sha256 | short }}</td>

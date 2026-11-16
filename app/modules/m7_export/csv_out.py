@@ -18,6 +18,9 @@ QUARANTINE_COLUMNS = ("行号引用", "表", "主键", "字段", "原值", "原�
 CONFLICT_COLUMNS = ("行号引用", "键", "版本", "操作", "事件时间(UTC)", "原因码", "明细")
 SNAPSHOT_COLUMNS = ("表", "主键", "版本", "状态", "金额(元)", "数量",
                     "事件时间(UTC)", "行号引用", "迟到", "待定")
+CUTOFF_COLUMNS = ("文件", "状态", "字节", "上次截止行", "本次截止行",
+                  "上次截止字节", "本次截止字节", "待续尾行字节", "待续尾行预览",
+                  "数据行", "声明行数", "前缀sha256", "字节账")
 
 
 def to_csv(columns: tuple[str, ...], rows: list[list]) -> str:
@@ -78,5 +81,25 @@ def snapshot_rows(rows: list[dict]) -> list[list]:
             "" if row.get("amount") is None else str(row["amount"]),
             row.get("qty"), row["event_time_utc"], row["row_ref"],
             "是" if row.get("late") else "否", "是" if row.get("pending") else "否",
+        ])
+    return out
+
+
+def cutoff_rows(inputs: list[dict]) -> list[list]:
+    """每文件一行：本次采用的截止位置与上次对照，字节账 = 字节 − 截止 − 待续。"""
+    out = []
+    for item in inputs:
+        size = int(item.get("bytes") or 0)
+        offset = int(item.get("cutoff_offset") or 0)
+        tail = int(item.get("pending_tail_bytes") or 0)
+        out.append([
+            item.get("name"), item.get("status"), size,
+            item.get("prev_cutoff_line"), item.get("cutoff_line"),
+            item.get("prev_cutoff_offset"), offset,
+            tail, item.get("pending_tail") or "",
+            item.get("lines"),
+            "" if item.get("declared_rows") is None else item.get("declared_rows"),
+            (item.get("prefix_sha256") or "")[:16],
+            "平" if size == offset + tail else "不平",
         ])
     return out

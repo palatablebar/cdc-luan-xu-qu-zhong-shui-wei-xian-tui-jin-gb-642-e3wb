@@ -47,6 +47,8 @@ def api_resume(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
         "batch_key": result["batch_key"],
         "run_id": result["run_id"],
         "idempotent_replay": result.get("idempotent_replay", False),
+        "continued": result.get("continued", False),
+        "run_seq": result.get("run_seq", 1),
         "replay_of": result.get("replay_of"),
         "resume_plan": result.get("resume_plan"),
         "resume_note": result.get("resume_note"),
@@ -56,6 +58,7 @@ def api_resume(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
         "reconciliation": result["reconciliation"],
         "all_balanced": result["all_balanced"],
         "watermark": result["watermark"],
+        "cutoff": result.get("cutoff"),
         "stages": result["stages"],
     }
 
@@ -66,8 +69,9 @@ def page_batches(request: Request, ctx: Ctx = Depends(get_ctx)):
     rows = history.rows(ctx.store, limit=20)
     totals = ctx.store.load_totals(batch["batch_id"]) if batch else {}
     stages = ctx.store.load_stages(batch["batch_id"]) if batch else []
+    inputs = ctx.store.load_inputs(batch["batch_id"]) if batch else []
     return render(request, "batches.html", batch=batch, page="batches",
-                  batches=rows, totals=totals, stages=stages,
+                  batches=rows, totals=totals, stages=stages, inputs=inputs,
                   stored_watermark=state.stored_watermark(ctx.store),
                   plan=resume.plan(ctx.store, batch["batch_id"]) if batch else {},
                   manifest=(ctx.store.load_manifest(batch["batch_id"])

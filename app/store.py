@@ -85,7 +85,18 @@ class Store:
     @staticmethod
     def _ensure_columns(conn) -> None:
         """轻量迁移：老库缺列时补上，避免升级后 500。"""
-        wanted = {"inputs": {"declared": "TEXT"}}
+        wanted = {
+            "inputs": {
+                "declared": "TEXT",
+                "cutoff_offset": "INTEGER NOT NULL DEFAULT 0",
+                "cutoff_line": "INTEGER NOT NULL DEFAULT 0",
+                "prev_cutoff_offset": "INTEGER",
+                "prev_cutoff_line": "INTEGER",
+                "pending_tail_bytes": "INTEGER NOT NULL DEFAULT 0",
+                "pending_tail": "TEXT NOT NULL DEFAULT ''",
+                "prefix_sha256": "TEXT NOT NULL DEFAULT ''",
+            },
+        }
         for table, columns in wanted.items():
             existing = {row["name"] for row in conn.execute(
                 f"PRAGMA table_info({table})").fetchall()}
@@ -146,12 +157,18 @@ class Store:
             for i, item in enumerate(inputs, 1):
                 conn.execute(
                     """INSERT INTO inputs (batch_id,seq,name,bytes,sha256,declared_rows,
-                        encoding,declared,kind,status,code,note,lines)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        encoding,declared,kind,status,code,note,lines,
+                        cutoff_offset,cutoff_line,prev_cutoff_offset,prev_cutoff_line,
+                        pending_tail_bytes,pending_tail,prefix_sha256)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (batch["batch_id"], i, item["name"], item["bytes"], item["sha256"],
                      item.get("declared_rows"), item.get("encoding"),
                      item.get("declared"), item.get("kind"), item["status"],
-                     item.get("code"), item.get("note", ""), item.get("lines", 0)))
+                     item.get("code"), item.get("note", ""), item.get("lines", 0),
+                     item.get("cutoff_offset", 0), item.get("cutoff_line", 0),
+                     item.get("prev_cutoff_offset"), item.get("prev_cutoff_line"),
+                     item.get("pending_tail_bytes", 0), item.get("pending_tail", ""),
+                     item.get("prefix_sha256", "")))
             for row in events:
                 conn.execute(
                     """INSERT INTO events (batch_id,row_ref,seq,table_name,pk,version,op,
@@ -205,6 +222,7 @@ class Store:
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(batch_id) DO UPDATE SET
                      status=excluded.status, finished_at=excluded.finished_at,
+                     run_id=excluded.run_id,
                      note=excluded.note, input_digest=excluded.input_digest,
                      watermark_utc=excluded.watermark_utc,
                      max_event_time=excluded.max_event_time""",
@@ -258,16 +276,86 @@ class Store:
             for i, item in enumerate(inputs, 1):
                 conn.execute(
                     """INSERT INTO inputs (batch_id,seq,name,bytes,sha256,declared_rows,
-                        encoding,declared,kind,status,code,note,lines)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        encoding,declared,kind,status,code,note,lines,
+                        cutoff_offset,cutoff_line,prev_cutoff_offset,prev_cutoff_line,
+                        pending_tail_bytes,pending_tail,prefix_sha256)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (batch["batch_id"], i, item["name"], item["bytes"], item["sha256"],
                      item.get("declared_rows"), item.get("encoding"),
                      item.get("declared"), item.get("kind"), item["status"],
-                     item.get("code"), item.get("note", ""), item.get("lines", 0)))
+                     item.get("code"), item.get("note", ""), item.get("lines", 0),
+                     item.get("cutoff_offset", 0), item.get("cutoff_line", 0),
+                     item.get("prev_cutoff_offset"), item.get("prev_cutoff_line"),
+                     item.get("pending_tail_bytes", 0), item.get("pending_tail", ""),
+                     item.get("prefix_sha256", "")))
 
     # ---------- 读取 ----------
     def load_inputs(self, batch_id: str) -> list[dict]:
         return self._all("SELECT * FROM inputs WHERE batch_id=? ORDER BY seq", (batch_id,))
+
+    # ---------- 事件分页（keyset：页边界是 seq，翻页不重不漏） ----------
+    def count_events(self, batch_id: str, row_class: str | None = None,
+                     table: str | None = None) -> int:
+        where, args = self._event_filter(batch_id, row_class, table)
+        rows = self._all(f"SELECT COUNT(*) AS n FROM events {where}", tuple(args))
+        return int(rows[0]["n"])
+
+    def page_events(self, batch_id: str, row_class: str | None = None,
+                    table: str | None = None, *, after: int = 0,
+                    before: int | None = None, limit: int = 200) -> dict:
+        """按到达序号 seq 游标翻页。
+
+        seq 在同一批次内单调且稳定（追加只往后排），所以 after/before 界出的
+        页与页之间不重不漏；多取一行判断方向之外是否还有数据。
+        """
+        where, args = self._event_filter(batch_id, row_class, table)
+        limit = max(1, min(int(limit), 2000))
+        total = self.count_events(batch_id, row_class, table)
+        if before is not None:
+            rows = self._all(
+                f"SELECT * FROM events {where} AND seq < ? ORDER BY seq DESC LIMIT ?",
+                tuple(args) + (int(before), limit + 1))
+            rows.reverse()
+            has_prev = len(rows) > limit
+            rows = rows[-limit:] if has_prev else rows
+            return self._page_payload(rows, total, has_more=bool(rows),
+                                      has_prev=has_prev)
+        rows = self._all(
+            f"SELECT * FROM events {where} AND seq > ? ORDER BY seq LIMIT ?",
+            tuple(args) + (max(0, int(after)), limit + 1))
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return self._page_payload(rows, total, has_more=has_more,
+                                  has_prev=max(0, int(after)) > 0)
+
+    @staticmethod
+    def _page_payload(rows: list[dict], total: int, *, has_more: bool,
+                      has_prev: bool) -> dict:
+        return {
+            "rows": rows,
+            "total": total,
+            "count": len(rows),
+            "first_seq": rows[0]["seq"] if rows else None,
+            "last_seq": rows[-1]["seq"] if rows else None,
+            "next_after": rows[-1]["seq"] if rows else None,
+            "prev_before": rows[0]["seq"] if rows else None,
+            "has_more": has_more,
+            "has_prev": has_prev,
+        }
+
+    @staticmethod
+    def _event_filter(batch_id: str, row_class: str | None,
+                      table: str | None) -> tuple[str, list]:
+        where = "WHERE batch_id=?"
+        args: list = [batch_id]
+        if row_class:
+            where += " AND row_class=?"
+            args.append(row_class)
+        if table:
+            where += " AND table_name=?"
+            args.append(table)
+        return where, args
+
 
     def load_events(self, batch_id: str, row_class: str | None = None) -> list[dict]:
         if row_class:

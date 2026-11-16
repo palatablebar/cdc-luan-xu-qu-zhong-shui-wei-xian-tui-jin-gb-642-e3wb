@@ -1,7 +1,8 @@
 """批次状态：批次键、参数规范化、水位持久化与陈旧判定。
 
-批次键 = 输入摘要 + 规则版本 + 参数 的 sha256 前 10 位，用作 batch_id。
-同一输入重跑命中同一 batch_id，直接复用已落库结果（幂等）。
+批次键 = 来源 + 规则版本 + 参数 的 sha256 前 10 位，用作 batch_id——这是一条
+「流」的身份，不含输入摘要：同一来源的导出被追加后续写，仍命中同一批次，
+结果按完整前缀累计替换（续跑）；输入摘要完全没变才走幂等重放，直接复用结果。
 
 水位持久化：水位只允许前进。若本次输入的最大 event_time 低于已持久化水位线，
 说明拿到的是旧导出，按陈旧批次拒绝，不让它覆盖已经推进过的状态（TRAP-26）。
@@ -25,9 +26,9 @@ def normalize_params(params: dict | None) -> dict:
     return clean
 
 
-def batch_key(input_digest: str, rule_version: str, params: dict | None = None) -> str:
+def batch_key(source: str, rule_version: str, params: dict | None = None) -> str:
     body = "|".join([
-        input_digest,
+        source,
         rule_version,
         json.dumps(normalize_params(params), sort_keys=True, ensure_ascii=False),
     ])

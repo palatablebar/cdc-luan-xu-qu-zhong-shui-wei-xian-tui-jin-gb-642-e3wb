@@ -43,6 +43,9 @@ REASONS = {
     "E_TAIL_TRUNCATED": _r(
         "E_TAIL_TRUNCATED", ERROR, "ingest",
         "末行不完整或行数与声明不符，末行已丢弃", "重新导出完整文件后重跑"),
+    "S_PENDING_TAIL": _r(
+        "S_PENDING_TAIL", INFO, "ingest",
+        "末行尚未换行，按待续尾行挂起，本次不解析", "上游续写完成后重跑即采信，不会丢行"),
     "E_BAD_JSON": _r(
         "E_BAD_JSON", ERROR, "ingest",
         "行内 JSON 无法解析", "多为写入中断，回源补齐该行"),
@@ -129,6 +132,12 @@ REASONS = {
     "B_RESUMED": _r(
         "B_RESUMED", INFO, "batches",
         "从断点续跑，已采信文件不再重复解码", "续跑沿用原水位"),
+    "B_CONTINUED": _r(
+        "B_CONTINUED", INFO, "batches",
+        "输入有追加，同一批次续跑，结果按完整前缀累计替换", "完整记录只进一次，前缀已校验未改写"),
+    "C_STREAM_REWRITTEN": _r(
+        "C_STREAM_REWRITTEN", ERROR, "batches",
+        "已采信前缀被改写或输入文件缺失，拒绝继续", "导出被重做时换新来源名重跑，不要原地覆盖"),
     "B_NO_STATE": _r(
         "B_NO_STATE", WARN, "batches",
         "该批次没有可用的断点状态，按全新批次重跑", "失败过早时会遇到"),

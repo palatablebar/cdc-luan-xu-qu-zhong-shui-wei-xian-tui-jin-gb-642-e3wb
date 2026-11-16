@@ -30,8 +30,25 @@ def build(store, batch_id: str) -> dict:
         "stages": doc.get("stages", _stages(store, batch_id)),
         "counters": doc.get("counters", store.load_totals(batch_id)),
         "reconcile": doc.get("reconcile", []),
-        "replayable": "同一 input_digest 重跑命中 batch_key，不新增行",
+        "cutoff": doc.get("cutoff") or _cutoff_from_inputs(store, batch_id),
+        "replayable": "同一来源与参数重跑命中批次键：输入未变复用结果，有追加则续跑累计",
     }
+
+
+def _cutoff_from_inputs(store, batch_id: str) -> dict:
+    """老清单没有 cutoff 节时，用 inputs 行现拼一份（只有文件维度）。"""
+    from ..m6_batches import continuation
+    batch = store.get_batch(batch_id) or {}
+    totals = store.load_totals(batch_id)
+    return continuation.cutoff_section(
+        run_seq=int(totals.get("run_seq", 1) or 1), continued=False,
+        prev_watermark=batch.get("watermark_utc"),
+        watermark=batch.get("watermark_utc"),
+        prev_applied=int(totals.get("applied", 0) or 0),
+        applied=int(totals.get("applied", 0) or 0),
+        prev_raw_lines=int(totals.get("raw_lines", 0) or 0),
+        raw_lines=int(totals.get("raw_lines", 0) or 0),
+        files=store.load_inputs(batch_id))
 
 
 def _fallback(store, batch: dict) -> dict:

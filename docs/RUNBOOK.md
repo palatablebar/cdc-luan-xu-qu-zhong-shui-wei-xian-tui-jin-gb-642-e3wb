@@ -46,8 +46,17 @@ curl -s -o /tmp/manifest.json   "$BASE/api/export/manifest.json"
 | 隔离区大量同名行 | `E_COLUMN_COUNT` / `E_BAD_JSON` | 导出端截断或多分隔符，重新导出 |
 | 冲突表出现同键同版本 | `C_VERSION_CONFLICT` | 两条都不应用，回源确认版本号 |
 | 导入报 409 | `C_STALE_BATCH` | 拿到的是旧导出，重新导出后再跑 |
+| 导入报 409 | `C_STREAM_REWRITTEN` | 已采信前缀被改写 / 截短 / 文件消失；导出被重做时换新来源名重跑，不要原地覆盖 |
+| 末行半天不进来 | `S_PENDING_TAIL` | 末行还没换行，属正常待续；上游写完后重跑即采信 |
 | 快照键比预期少 | `W_PENDING_WINDOW` | 事件落在水位之后，等下一轮水位推过 |
 | 水位不前进 | `W_WATERMARK_REGRESS` | 检查导出端时钟与文件版本 |
+
+## 5 续写文件的班次节奏
+
+1. 早班封板前点「采信」：本次只消费到截止位置（最后一个完整行），未换行的尾行挂起；
+2. `/batches` 看每文件「上次 → 本次」截止行 / 字节与字节账，`cutoffs.csv` 可导出交班；
+3. 上游继续追加后再点「采信」：同一批次续跑，`run_seq` 递增，水位与已应用给前后对照；
+4. 输入一字未变的重跑是幂等重放，不新增行；落库失败重试整体回滚，不会重复。
 
 ## 5 重建数据库
 
@@ -72,4 +81,5 @@ python -m pytest -q
 - `quarantine.csv`：10 行，含 `字段`、`原值`、`原始文本`；
 - `conflicts.csv`：3 行，含两条证据行引用；
 - `snapshot.csv` / `snapshot.json`：18 键，活跃 16、墓碑 2；
-- `manifest.json`：`run_id`、每个输入的 sha256、阶段耗时、四账。
+- `cutoffs.csv`：每文件一行，上次 / 本次截止行与字节、待续尾行、字节账；
+- `manifest.json`：`run_id`、每个输入的 sha256、阶段耗时、四账、`cutoff` 节（前后对照）。

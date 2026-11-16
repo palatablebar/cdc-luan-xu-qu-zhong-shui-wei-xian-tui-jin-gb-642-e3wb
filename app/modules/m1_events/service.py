@@ -72,6 +72,8 @@ def ingest(settings, *, source: str = "all") -> IngestBundle:
         "header_repeat": header_repeat,
         "comments": sum(f.codes.count("S_BOM_STRIPPED") * 0 for f in bundle.files),
         "failed_files": sum(1 for f in bundle.files if f.status != "ok"),
+        "pending_tail_bytes": sum(f.pending_tail_bytes for f in bundle.files),
+        "pending_tail_files": sum(1 for f in bundle.files if f.pending_tail_bytes),
     }
     return bundle
 
@@ -89,6 +91,9 @@ def diagnostics(bundle: IngestBundle) -> list[dict]:
             "lines": item.lines, "blank": item.blank, "bytes": item.size,
             "sha256": item.sha256, "status": item.status, "code": item.code,
             "codes": item.codes, "note": item.note,
+            "cutoff_offset": item.cutoff_offset, "cutoff_line": item.cutoff_line,
+            "pending_tail_bytes": item.pending_tail_bytes,
+            "pending_tail": item.pending_tail,
         })
     return rows
 

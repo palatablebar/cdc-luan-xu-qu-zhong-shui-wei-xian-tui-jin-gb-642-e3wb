@@ -1,25 +1,17 @@
 """续跑与重放：断点计划、幂等重放判定、陈旧批次拒绝。
 
-三种情形分开：
+四种情形分开：
 
-1. 同一输入重跑（batch_key 命中已完成批次）→ 复用结果，不新增行；
-2. 失败批次续跑 → 沿用原水位，输入重新采信；
-3. 输入比已持久化水位更旧 → 拒绝（409），不让它覆盖已推进的状态。
+1. 同一输入重跑（流批次键命中且输入摘要一致）→ 复用结果，不新增行；
+2. 同一来源有追加（输入摘要变了）→ 校验只追加后同一批次续跑，结果累计替换；
+3. 失败批次续跑 → 沿用原水位，输入重新采信；
+4. 输入比已持久化水位更旧 → 拒绝（409），不让它覆盖已推进的状态。
 """
 from __future__ import annotations
 
 from ... import errors, reasons
 from ..m2_schema.coerce import parse_iso
 from . import state
-
-
-def replay_of(store, batch_key: str) -> dict | None:
-    found = store.find_done_by_key(batch_key)
-    if not found:
-        return None
-    return {"batch_id": found["batch_id"], "run_id": found["run_id"],
-            "watermark_utc": found.get("watermark_utc"),
-            "code": "B_IDEMPOTENT_REPLAY"}
 
 
 def plan(store, batch_id: str) -> dict:

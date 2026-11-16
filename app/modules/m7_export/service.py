@@ -14,6 +14,8 @@ DATASETS = {
                   "columns": csv_out.CONFLICT_COLUMNS},
     "snapshot": {"label": "快照", "filename": "snapshot.csv",
                  "columns": csv_out.SNAPSHOT_COLUMNS},
+    "cutoffs": {"label": "截止位置", "filename": "cutoffs.csv",
+                "columns": csv_out.CUTOFF_COLUMNS},
     "manifest": {"label": "运行清单", "filename": "manifest.json", "columns": ()},
     "snapshot_json": {"label": "快照 JSON", "filename": "snapshot.json",
                       "columns": ()},
@@ -37,6 +39,8 @@ def rows_for(store, batch_id: str, kind: str) -> list[list]:
         return csv_out.conflict_rows([r for r in rows if r["row_class"] == "conflict"])
     if kind == "snapshot":
         return csv_out.snapshot_rows(store.load_snapshot(batch_id))
+    if kind == "cutoffs":
+        return csv_out.cutoff_rows(store.load_inputs(batch_id))
     raise errors.BadRequest(f"未知导出集 {kind!r}", code="E_BAD_DATASET")
 
 
@@ -74,6 +78,7 @@ def catalog(store, batch_id: str | None = None) -> list[dict]:
         "quarantine": sum(1 for r in rows if r["row_class"] == "quarantine"),
         "conflicts": sum(1 for r in rows if r["row_class"] == "conflict"),
         "snapshot": len(store.load_snapshot(batch["batch_id"])),
+        "cutoffs": len(store.load_inputs(batch["batch_id"])),
         "manifest": 1,
         "snapshot_json": 1,
     }

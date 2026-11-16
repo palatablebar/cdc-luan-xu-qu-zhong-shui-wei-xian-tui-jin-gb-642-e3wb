@@ -9,26 +9,30 @@
 
 - 采信 JSONL 与 CSV 两种导出格式，保留 `文件名:行号` 与原始文本；
 - 编码回退（utf-8 → gb18030），声明与实际不符会留原因码；重复表头、列数不齐、尾行截断各自判定；
+- **续写文件按截止位置采信**：未换行的末行挂起为待续尾行（不解析、不隔离），追加后同一批次续跑，
+  完整记录只进一次；上次截止位置前的字节做 sha256 校验，改写 / 截短 / 文件消失直接 409；
 - v1/v2 列名演进按别名归一，契约外字段隔离，新旧列名同时出现判歧义；
 - 完全重复按「规范化全行签名」去重，时区写法不同但同一时刻也合并且注明；
 - 同键同版本不同内容判 `C_VERSION_CONFLICT`，墓碑之后到达的低版本 upsert 判
   `C_TOMBSTONE_RESURRECT`，两条都不应用；
 - 水位线 = 已应用事件最大 `event_time` − 10 分钟，严格小于才记迟到，迟到**仍然应用**；
 - 快照按 `event_time ≤ as_of` 物化，`as_of` 之后的事件留待定窗口，一并给出合计；
-- 批次键 = 输入摘要 + 规则版本 + 参数，同一输入重跑命中批次、不新增行；
-- 导出事件证据、隔离区、冲突表、快照 CSV/JSON 与运行清单（含 `run_id` 与每个输入的 sha256）。
+- 批次键 = 来源 + 规则版本 + 参数，同一输入重跑命中批次、不新增行，失败重试整体回滚不重复；
+- 事件流按到达序号 keyset 翻页，页与页不重不漏，追加后已有记录序号不动；
+- 导出事件证据、隔离区、冲突表、快照、**截止位置** CSV/JSON 与运行清单（含 `run_id`、
+  每个输入的 sha256 与本次采用的截止位置及前后对照）。
 
 ## 功能模块
 
 | 模块 | 使用者动作 | 入口 | 核心文件 |
 |---|---|---|---|
-| M1 事件采信 | 选来源跑一次采信，看到逐文件诊断 | `POST /api/events/import`、页面 `/events` | `reader.py` `decode.py` `format.py` |
+| M1 事件采信 | 选来源跑一次采信，看到逐文件诊断与截止位置 | `POST /api/events/import`、页面 `/events` | `reader.py` `decode.py` `format.py` `tail.py` |
 | M2 契约兼容 | 看列契约与别名，试归一一条事件 | `GET /api/schema`、`POST /api/schema/preview`、页面 `/schema` | `contract.py` `coerce.py` `alias.py` |
 | M3 去重冲突 | 看重复、冲突、隔离与原因码分布 | `GET /api/conflicts`、页面 `/conflicts` | `dedup.py` `conflict.py` |
 | M4 水位迟到 | 看水位时间轴与迟到明细 | `GET /api/watermark`、页面 `/` | `watermark.py` `late.py` |
 | M5 快照物化 | 按水位物化快照，看待定键 | `POST /api/snapshot`、页面 `/snapshot` | `apply.py` `materialize.py` |
-| M6 批次续跑 | 查历史、看清单、续跑与重跑 | `GET /api/batches`、页面 `/batches` | `state.py` `resume.py` `history.py` |
-| M7 审计导出 | 下载证据行、隔离、冲突、快照与清单 | `GET /api/export/*` | `csv_out.py` `json_out.py` `manifest_out.py` |
+| M6 批次续跑 | 查历史、看清单、追加后续跑与重跑、看截止前后对照 | `GET /api/batches`、页面 `/batches` | `state.py` `resume.py` `continuation.py` `history.py` |
+| M7 审计导出 | 下载证据行、隔离、冲突、快照、截止位置与清单 | `GET /api/export/*` | `csv_out.py` `json_out.py` `manifest_out.py` |
 
 模块内统一是 `handler.py`（入口）+ `service.py`（编排）+ 两个纯规则/读写文件；
 定义写在 `docs/DATA-DICTIONARY.md`，坑与测试映射写在 `docs/DEPTH.md`。
@@ -39,7 +43,9 @@
 2. **冲突不猜**：同键同版本两种内容 → 整组不应用；删除后到达的低版本 upsert 不复活；
 3. **水位单调**：`max(event_time) − 10min`，只由已应用事件推进，迟到只标记不丢弃；
 4. **快照半开**：`[-, as_of]` 进快照、`(as_of, +inf)` 待定，两窗口不重叠；
-5. **金额 Decimal**：`0.01` 量化、`ROUND_HALF_UP`，合计可独立复算。
+5. **金额 Decimal**：`0.01` 量化、`ROUND_HALF_UP`，合计可独立复算；
+6. **截止续跑**：只消费到最后一个完整行（CSV 看引号外换行），待续尾行挂起；
+   追加后同一批次续跑、结果累计替换；前缀改写 / 截短 / 文件消失 409 拒绝。
 
 ## 启动
 
@@ -55,18 +61,20 @@ docker compose down -v             # 连数据库卷一起删
 ## 演示步骤
 
 1. 首页看水位时间轴：竖线是水位线，黄色刻度是迟到；
-2. `/events` 按分类筛选，看每行的行号引用与原因码；
+2. `/events` 按分类筛选，看每行的行号引用与原因码；输入文件表看每文件的截止行与待续尾行；
 3. `/conflicts` 看冲突分组、隔离区与优先级表，导出隔离 CSV；
 4. `/snapshot` 点「物化」，看活跃 / 墓碑 / 待定与三条对账；
-5. `/batches` 看 `run_id`、输入 sha256、阶段耗时，导出运行清单。
+5. `/batches` 看 `run_id`、输入 sha256、每文件上次 → 本次截止位置与字节账，导出运行清单与 `cutoffs.csv`；
+6. 往样例文件追加几行（末行别换行），再点「采信」：同一批次续跑，`run_seq` 递增，
+   待续尾行在写完后自动进入；改写已采信的前几行再跑，会看到 409 `C_STREAM_REWRITTEN`。
 
 ## API 与页面
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/api/health` | 健康检查与水位数 |
-| POST | `/api/events/import` | 采信（`source=all/main/v1_csv/late`） |
-| GET | `/api/events` | 事件流（可按分类、表过滤） |
+| POST | `/api/events/import` | 采信（`source=all/main/v1_csv/late` 或样例目录内文件名） |
+| GET | `/api/events` | 事件流（`row_class`/`table` 过滤，`limit`+`after` keyset 翻页，返回 `total/next_after/has_more`） |
 | GET | `/api/schema` | 契约、别名、版本 |
 | POST | `/api/schema/preview` | 单条试归一 |
 | GET | `/api/conflicts` | 冲突、隔离、重复、分布 |
@@ -74,8 +82,8 @@ docker compose down -v             # 连数据库卷一起删
 | GET | `/api/snapshot` / POST `/api/snapshot` | 读快照 / 重新物化 |
 | GET | `/api/batches`、`/api/batches/{id}`、`/api/batches/{id}/manifest` | 批次与清单 |
 | POST | `/api/batches/{id}/resume` | 续跑 |
-| GET | `/api/export/{events,quarantine,conflicts,snapshot}.csv` | 证据导出 |
-| GET | `/api/export/{snapshot,manifest}.json` | 快照与运行清单 |
+| GET | `/api/export/{events,quarantine,conflicts,snapshot,cutoffs}.csv` | 证据与截止位置导出 |
+| GET | `/api/export/{snapshot,manifest}.json` | 快照与运行清单（含 cutoff 节） |
 
 页面共 6 个：`/`、`/events`、`/schema`、`/conflicts`、`/snapshot`、`/batches`。
 

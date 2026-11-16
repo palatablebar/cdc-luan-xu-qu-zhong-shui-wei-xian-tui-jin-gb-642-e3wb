@@ -114,6 +114,9 @@ DEFAULT_TOTALS = {
     "drift_keys": 0, "amount_snapshot": "0.00", "amount_pending": "0.00",
     "amount_drift": "0.00", "amount_applied": "0.00",
     "reconcile_ok": "0",
+    "run_seq": 0, "prev_watermark_utc": None, "prev_max_event_time": None,
+    "prev_applied": 0, "prev_raw_lines": 0,
+    "pending_tail_bytes": 0, "pending_tail_files": 0, "cutoff_ok": "1",
 }
 
 
